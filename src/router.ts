@@ -224,27 +224,29 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
 
     const userId = payload.sub;
 
-    // API rate limiting for authenticated requests
-    const rateLimit = new RateLimitService(env.DB);
-    const clientId = getClientIdentifier(request);
-    const rateLimitCheck = await rateLimit.checkApiRateLimit(userId + ':' + clientId);
-    
-    if (!rateLimitCheck.allowed) {
-      return new Response(JSON.stringify({
-        error: 'Too many requests',
-        error_description: `Rate limit exceeded. Try again in ${rateLimitCheck.retryAfterSeconds} seconds.`,
-      }), {
-        status: 429,
-        headers: {
-          'Content-Type': 'application/json',
-          'Retry-After': rateLimitCheck.retryAfterSeconds!.toString(),
-          'X-RateLimit-Remaining': '0',
-        },
-      });
-    }
+    // API rate limiting only for write operations (keep reads frictionless)
+    const isWriteMethod = method === 'POST' || method === 'PUT' || method === 'DELETE' || method === 'PATCH';
+    if (isWriteMethod) {
+      const rateLimit = new RateLimitService(env.DB);
+      const clientId = getClientIdentifier(request);
+      const rateLimitCheck = await rateLimit.checkApiRateLimit(userId + ':' + clientId + ':write');
 
-    // Increment rate limit counter
-    await rateLimit.incrementApiCount(userId + ':' + clientId);
+      if (!rateLimitCheck.allowed) {
+        return new Response(JSON.stringify({
+          error: 'Too many requests',
+          error_description: `Rate limit exceeded. Try again in ${rateLimitCheck.retryAfterSeconds} seconds.`,
+        }), {
+          status: 429,
+          headers: {
+            'Content-Type': 'application/json',
+            'Retry-After': rateLimitCheck.retryAfterSeconds!.toString(),
+            'X-RateLimit-Remaining': '0',
+          },
+        });
+      }
+
+      await rateLimit.incrementApiCount(userId + ':' + clientId + ':write');
+    }
 
     // Block account operations that could change password or delete user
     if (method === 'POST' || method === 'PUT' || method === 'DELETE') {
@@ -258,7 +260,7 @@ export async function handleRequest(request: Request, env: Env): Promise<Respons
         '/api/accounts/delete-vault',
       ]);
       if (blockedAccountPaths.has(path)) {
-        return errorResponse('This operation is disabled', 403);
+        return errorResponse('Not implemented in single-user mode', 501);
       }
     }
 

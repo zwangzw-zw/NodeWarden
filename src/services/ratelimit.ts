@@ -1,30 +1,53 @@
 // D1-backed rate limiting.
 // Notes:
-// - Login attempts are tracked per email.
+// - Login attempts are tracked per client IP.
 // - API rate is tracked per identifier per fixed window.
 
 // Rate limit configuration
 const CONFIG = {
-  LOGIN_MAX_ATTEMPTS: 15,
-  LOGIN_LOCKOUT_MINUTES: 5,
+  // Friendly default: short cooldown instead of long lockouts.
+  LOGIN_MAX_ATTEMPTS: 8,
+  LOGIN_LOCKOUT_MINUTES: 2,
 
-  API_REQUESTS_PER_MINUTE: 300,
+  // Write operations only (POST/PUT/DELETE/PATCH) should use this budget.
+  API_WRITE_REQUESTS_PER_MINUTE: 120,
   API_WINDOW_SECONDS: 60,
 };
 
 export class RateLimitService {
+  private static loginIpTableReady = false;
+
   constructor(private db: D1Database) {}
 
-  async checkLoginAttempt(email: string): Promise<{
+  private async ensureLoginIpTable(): Promise<void> {
+    if (RateLimitService.loginIpTableReady) return;
+
+    await this.db
+      .prepare(
+        'CREATE TABLE IF NOT EXISTS login_attempts_ip (' +
+        'ip TEXT PRIMARY KEY, ' +
+        'attempts INTEGER NOT NULL, ' +
+        'locked_until INTEGER, ' +
+        'updated_at INTEGER NOT NULL' +
+        ')'
+      )
+      .run();
+
+    RateLimitService.loginIpTableReady = true;
+  }
+
+  async checkLoginAttempt(ip: string): Promise<{
     allowed: boolean;
     remainingAttempts: number;
     retryAfterSeconds?: number;
   }> {
-    const key = email.toLowerCase();
+    await this.ensureLoginIpTable();
+
+    const key = ip.trim() || 'unknown';
     const now = Date.now();
 
     const row = await this.db
-      .prepare('SELECT attempts, locked_until FROM login_attempts WHERE email = ?')
+      .prepare('SELECT attempts, locked_until FROM login_attempts_ip WHERE ip = ?')
       .bind(key)
       .first<{ attempts: number; locked_until: number | null }>();
 
@@ -41,7 +64,7 @@ export class RateLimitService {
     }
 
     if (row.locked_until && row.locked_until <= now) {
-      await this.db.prepare('DELETE FROM login_attempts WHERE email = ?').bind(key).run();
+      await this.db.prepare('DELETE FROM login_attempts_ip WHERE ip = ?').bind(key).run();
       return { allowed: true, remainingAttempts: CONFIG.LOGIN_MAX_ATTEMPTS };
     }
 
@@ -49,8 +72,10 @@ export class RateLimitService {
     return { allowed: true, remainingAttempts };
   }
 
-  async recordFailedLogin(email: string): Promise<{ locked: boolean; retryAfterSeconds?: number }> {
-    const key = email.toLowerCase();
+  async recordFailedLogin(ip: string): Promise<{ locked: boolean; retryAfterSeconds?: number }> {
+    await this.ensureLoginIpTable();
+
+    const key = ip.trim() || 'unknown';
     const now = Date.now();
 
     // D1 in Workers forbids raw BEGIN/COMMIT statements.
@@ -58,14 +83,14 @@ export class RateLimitService {
     // This is concurrency-safe because the row is keyed by email.
     await this.db
       .prepare(
-        'INSERT INTO login_attempts(email, attempts, locked_until, updated_at) VALUES(?, 1, NULL, ?) ' +
-        'ON CONFLICT(email) DO UPDATE SET attempts = attempts + 1, updated_at = excluded.updated_at'
+        'INSERT INTO login_attempts_ip(ip, attempts, locked_until, updated_at) VALUES(?, 1, NULL, ?) ' +
+        'ON CONFLICT(ip) DO UPDATE SET attempts = attempts + 1, updated_at = excluded.updated_at'
       )
       .bind(key, now)
       .run();
 
     const row = await this.db
-      .prepare('SELECT attempts FROM login_attempts WHERE email = ?')
+      .prepare('SELECT attempts FROM login_attempts_ip WHERE ip = ?')
       .bind(key)
       .first<{ attempts: number }>();
 
@@ -73,7 +98,7 @@ export class RateLimitService {
     if (attempts >= CONFIG.LOGIN_MAX_ATTEMPTS) {
       const lockedUntil = now + CONFIG.LOGIN_LOCKOUT_MINUTES * 60 * 1000;
       await this.db
-        .prepare('UPDATE login_attempts SET locked_until = ?, updated_at = ? WHERE email = ?')
+        .prepare('UPDATE login_attempts_ip SET locked_until = ?, updated_at = ? WHERE ip = ?')
         .bind(lockedUntil, now, key)
         .run();
       return { locked: true, retryAfterSeconds: CONFIG.LOGIN_LOCKOUT_MINUTES * 60 };
@@ -82,8 +107,10 @@ export class RateLimitService {
     return { locked: false };
   }
 
-  async clearLoginAttempts(email: string): Promise<void> {
-    await this.db.prepare('DELETE FROM login_attempts WHERE email = ?').bind(email.toLowerCase()).run();
+  async clearLoginAttempts(ip: string): Promise<void> {
+    await this.ensureLoginIpTable();
+    const key = ip.trim() || 'unknown';
+    await this.db.prepare('DELETE FROM login_attempts_ip WHERE ip = ?').bind(key).run();
   }
 
   async checkApiRateLimit(identifier: string): Promise<{ allowed: boolean; remaining: number; retryAfterSeconds?: number }> {
@@ -97,7 +124,7 @@ export class RateLimitService {
       .first<{ count: number }>();
 
     const count = row?.count || 0;
-    if (count >= CONFIG.API_REQUESTS_PER_MINUTE) {
+    if (count >= CONFIG.API_WRITE_REQUESTS_PER_MINUTE) {
       return {
         allowed: false,
         remaining: 0,
@@ -107,7 +134,7 @@ export class RateLimitService {
 
     return {
       allowed: true,
-      remaining: CONFIG.API_REQUESTS_PER_MINUTE - count,
+      remaining: CONFIG.API_WRITE_REQUESTS_PER_MINUTE - count,
     };
   }
 

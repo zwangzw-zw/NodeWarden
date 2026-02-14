@@ -1,7 +1,7 @@
 import { Env, TokenResponse } from '../types';
 import { StorageService } from '../services/storage';
 import { AuthService } from '../services/auth';
-import { RateLimitService } from '../services/ratelimit';
+import { RateLimitService, getClientIdentifier } from '../services/ratelimit';
 import { jsonResponse, errorResponse, identityErrorResponse } from '../utils/response';
 
 // POST /identity/connect/token
@@ -26,6 +26,7 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
     // Login with password
     const email = body.username?.toLowerCase();
     const passwordHash = body.password;
+    const loginIdentifier = getClientIdentifier(request);
 
     if (!email || !passwordHash) {
       // Bitwarden clients expect OAuth-style error fields.
@@ -33,7 +34,7 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
     }
 
     // Check login lockout before user lookup to reduce user-enumeration signal
-    const loginCheck = await rateLimit.checkLoginAttempt(email);
+    const loginCheck = await rateLimit.checkLoginAttempt(loginIdentifier);
     if (!loginCheck.allowed) {
       return identityErrorResponse(
         `Too many failed login attempts. Try again in ${Math.ceil(loginCheck.retryAfterSeconds! / 60)} minutes.`,
@@ -44,14 +45,14 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
 
     const user = await storage.getUser(email);
     if (!user) {
-      await rateLimit.recordFailedLogin(email);
+      await rateLimit.recordFailedLogin(loginIdentifier);
       return identityErrorResponse('Username or password is incorrect. Try again', 'invalid_grant', 400);
     }
 
     const valid = await auth.verifyPassword(passwordHash, user.masterPasswordHash);
     if (!valid) {
       // Record failed login attempt
-      const result = await rateLimit.recordFailedLogin(email);
+      const result = await rateLimit.recordFailedLogin(loginIdentifier);
       if (result.locked) {
         return identityErrorResponse(
           `Too many failed login attempts. Account locked for ${Math.ceil(result.retryAfterSeconds! / 60)} minutes.`,
@@ -63,7 +64,7 @@ export async function handleToken(request: Request, env: Env): Promise<Response>
     }
 
     // Successful login - clear failed attempts
-    await rateLimit.clearLoginAttempts(email);
+    await rateLimit.clearLoginAttempts(loginIdentifier);
 
     const accessToken = await auth.generateAccessToken(user);
     const refreshToken = await auth.generateRefreshToken(user.id);
