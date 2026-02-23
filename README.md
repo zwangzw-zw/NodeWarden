@@ -1,7 +1,14 @@
-# NodeWarden
+# NodeWarden：运行在 Cloudflare Workers 的 Bitwarden 第三方服务端
+[![Powered by Cloudflare](https://img.shields.io/badge/Powered%20by-Cloudflare-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
+[![License: LGPL-3.0](https://img.shields.io/badge/License-LGPL--3.0-2ea44f)](./LICENSE)
+[![Deploy to Cloudflare Workers](https://img.shields.io/badge/Deploy%20to-Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://deploy.workers.cloudflare.com/?url=https://github.com/shuaiplus/NodeWarden)
+[![Latest Release](https://img.shields.io/github/v/release/shuaiplus/NodeWarden?display_name=tag)](https://github.com/shuaiplus/NodeWarden/releases/latest)
+[![Sync Upstream](https://github.com/shuaiplus/NodeWarden/actions/workflows/sync-upstream.yml/badge.svg)](https://github.com/shuaiplus/NodeWarden/actions/workflows/sync-upstream.yml)
+
+[更新日志](./RELEASE_NOTES.md) • [提交问题](https://github.com/shuaiplus/NodeWarden/issues/new/choose) • [最新发布](https://github.com/shuaiplus/NodeWarden/releases/latest)
+
 English：[`README_EN.md`](./README_EN.md)
 
-运行在 **Cloudflare Workers** 上的 **Bitwarden 第三方服务端**。
 
 > **免责声明**  
 > 本项目仅供学习交流使用。我们不对任何数据丢失负责，强烈建议定期备份您的密码库。  
